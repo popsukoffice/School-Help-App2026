@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Help at School – Admin</title>
+<meta name="theme-color" content="#0e7c86">
+<style>
+  :root { --navy:#12284c; --teal:#0e7c86; --bg:#f3f7f8; --card:#fff; --line:#cfdbe0; --red:#c0262d; --amber:#b86a00; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:17px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--navy); }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px; background:#fff; border-bottom:3px solid var(--teal); position:sticky; top:0; z-index:5; }
+  header img { height:44px; width:auto; }
+  header h1 { font-size:1.15rem; margin:0; flex:1; }
+  header .who { font-size:.9rem; color:#46607a; }
+  button { font:inherit; font-weight:700; border-radius:12px; border:2px solid var(--navy); background:#fff; color:var(--navy); padding:8px 14px; min-height:42px; cursor:pointer; }
+  button.primary { background:var(--teal); border-color:var(--teal); color:#fff; }
+  button.small { min-height:34px; padding:4px 10px; font-size:.9rem; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline:3px solid #1767bc; outline-offset:3px; }
+  main { max-width:960px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:16px; padding:18px; display:grid; gap:12px; }
+  .card h2 { margin:0; font-size:1.15rem; }
+  .login { max-width:380px; margin:40px auto; }
+  label { font-weight:700; display:grid; gap:4px; }
+  input, textarea { font:inherit; padding:10px 12px; border:2px solid var(--line); border-radius:10px; width:100%; }
+  textarea { min-height:120px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.95rem; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .row.between { justify-content:space-between; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-size:.85rem; color:#46607a; }
+  .muted { color:#46607a; font-size:.9rem; }
+  .err { color:var(--red); font-weight:700; }
+  .ok { color:#1b7a45; font-weight:700; }
+  .pill { padding:2px 9px; border-radius:99px; font-size:.8rem; font-weight:800; background:#e3eef0; }
+  .pill.off { background:#fde3e3; color:var(--red); }
+  .secret { font-family:ui-monospace,Menlo,Consolas,monospace; font-weight:800; letter-spacing:.04em; }
+  .creds { border:2px solid var(--amber); background:#fffaf0; }
+  @media print { header, .noprint, button { display:none !important; } .creds { border:0; } }
+</style>
+</head>
+<body>
+<header>
+  <img src="logo.jpg" alt="Positive Outcomes Psychology Service">
+  <h1>Help at School – Admin</h1>
+  <span class="who" id="who"></span>
+  <button id="logout" type="button" hidden>Sign out</button>
+</header>
+<main>
+  <form class="card login" id="login">
+    <h2>Administrator sign in</h2>
+    <label>Email <input id="email" type="email" autocomplete="username" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">Sign in</button>
+    <p class="err" id="login-error" role="alert" style="margin:0"></p>
+  </form>
+
+  <div id="creds"></div>
+  <div id="view"></div>
+  <p class="muted noprint" id="foot" hidden>Passwords are shown once, when they are created or reset. Adults can change theirs on the staff page.</p>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+"use strict";
+const CFG = window.HELP_LIVE;
+const sb = supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: true, autoRefreshToken: true } });
+const $ = id => document.getElementById(id);
+let who = null;          // result of whoami
+let current = null;      // school id being managed
+
+function el(tag, props = {}, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") node.className = v;
+    else if (k === "onclick") node.onclick = v;
+    else if (v !== undefined && v !== null) node.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) node.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return node;
+}
+async function call(action, extra = {}) {
+  const { data, error } = await sb.functions.invoke("admin", { body: { action, ...extra } });
+  if (error) {
+    let message = "Something went wrong. Please try again.";
+    try { const body = await error.context.json(); if (body && body.error) message = body.error; } catch {}
+    throw new Error(message);
+  }
+  return data;
+}
+
+/* ---------- auth ---------- */
+$("login").addEventListener("submit", async event => {
+  event.preventDefault(); $("login-error").textContent = "";
+  const { error } = await sb.auth.signInWithPassword({ email: $("email").value.trim(), password: $("password").value });
+  if (error) $("login-error").textContent = "Sign in failed. Check your email and password.";
+});
+$("logout").onclick = () => sb.auth.signOut();
+sb.auth.onAuthStateChange((_e, session) => { session ? boot() : signedOut(); });
+sb.auth.getSession().then(({ data }) => { if (data.session) boot(); });
+
+function signedOut() {
+  who = null; current = null;
+  $("login").hidden = false; $("logout").hidden = true; $("who").textContent = ""; $("foot").hidden = true;
+  $("view").replaceChildren(); $("creds").replaceChildren();
+}
+async function boot() {
+  try { who = await call("whoami"); } catch (e) { $("login-error").textContent = e.message; return; }
+  const isAdmin = who.platform || (who.staff && who.staff.is_admin && who.staff.active);
+  if (!isAdmin) {
+    $("login-error").textContent = "This account is not an administrator.";
+    await sb.auth.signOut();
+    return;
+  }
+  $("login").hidden = true; $("logout").hidden = false; $("foot").hidden = false;
+  $("who").textContent = who.email + (who.platform ? " · POPS admin" : " · school admin");
+  who.platform ? showSchools() : showSchool(who.staff.school_id);
+}
+
+/* ---------- credentials panel (shown once) ---------- */
+function showCreds(title, school, adults) {
+  const rows = adults.map(a => el("tr", {},
+    el("td", {}, a.display_name || ""), el("td", {}, a.email || ""),
+    a.error ? el("td", { class: "err", colspan: "1" }, a.error) : el("td", { class: "secret" }, a.password)));
+  const lines = adults.filter(a => a.password).map(a => `${a.display_name}\t${a.email}\t${a.password}`).join("\n");
+  const card = el("div", { class: "card creds" },
+    el("h2", {}, title),
+    school ? el("p", {}, "School code: ", el("span", { class: "secret" }, school.pair_code),
+      "   Staff PIN: ", el("span", { class: "secret" }, school.staff_pin)) : null,
+    adults.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Email"), el("th", {}, "Password"))), el("tbody", {}, rows)) : null,
+    el("p", { class: "muted" }, "Write these down or print this now. Passwords are not shown again (you can reset one later)."),
+    el("div", { class: "row noprint" },
+      el("button", { class: "small", onclick: () => window.print() }, "Print"),
+      lines ? el("button", { class: "small", onclick: async e => { try { await navigator.clipboard.writeText(lines); e.target.textContent = "Copied"; } catch { e.target.textContent = "Copy failed"; } } }, "Copy passwords") : null,
+      el("button", { class: "small", onclick: () => $("creds").replaceChildren() }, "Done")));
+  $("creds").replaceChildren(card);
+  window.scrollTo(0, 0);
+}
+function parseAdults(text) {
+  return text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(line => {
+    const parts = line.split(/[,\t;]/).map(p => p.trim());
+    return { email: parts[0], display_name: parts[1] || "", is_admin: /admin|\*|yes/i.test(parts[2] || "") };
+  });
+}
+const adultsHelp = "One adult per line:  email, name shown to children, admin\nExample:\nmrs.patel@school.org, Mrs Patel, admin\nmr.taylor@school.org, Mr Taylor";
+
+/* ---------- platform: schools list + new school ---------- */
+async function showSchools() {
+  current = null;
+  const view = $("view");
+  view.replaceChildren(el("p", { class: "muted" }, "Loading…"));
+  let list;
+  try { list = (await call("list_schools")).schools; } catch (e) { view.replaceChildren(el("p", { class: "err" }, e.message)); return; }
+  const rows = list.map(s => el("tr", {},
+    el("td", {}, s.name), el("td", { class: "secret" }, s.pair_code), el("td", {}, String(s.adults)),
+    el("td", {}, el("button", { class: "small", onclick: () => showSchool(s.id) }, "Manage"))));
+  const name = el("input", { id: "new-name", maxlength: "120", placeholder: "School name" });
+  const adults = el("textarea", { id: "new-adults", placeholder: adultsHelp });
+  const msg = el("p", { class: "err", role: "alert" });
+  const go = el("button", { class: "primary", onclick: async () => {
+    msg.textContent = ""; go.disabled = true;
+    try {
+      const r = await call("create_school", { name: name.value, adults: parseAdults(adults.value) });
+      showCreds("New school created: " + r.school.name, r.school, r.adults);
+      name.value = ""; adults.value = "";
+      showSchools();
+    } catch (e) { msg.textContent = e.message; }
+    go.disabled = false;
+  } }, "Create school");
+  view.replaceChildren(
+    el("div", { class: "card" }, el("h2", {}, "Schools"),
+      list.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "School"), el("th", {}, "Code"), el("th", {}, "Adults"), el("th", {}))), el("tbody", {}, rows))
+        : el("p", { class: "muted" }, "No schools yet.")),
+    el("div", { class: "card" }, el("h2", {}, "Set up a new school"),
+      el("label", {}, "School name", name),
+      el("label", {}, "Adults (optional, you can add more later)", adults),
+      el("p", { class: "muted" }, "A school code and staff PIN are made for you. Each adult gets a login and a temporary password."),
+      el("div", { class: "row" }, go), msg),
+    passwordCard());
+}
+
+/* ---------- one school: adults, code, PIN ---------- */
+async function showSchool(schoolId) {
+  current = schoolId;
+  const view = $("view");
+  view.replaceChildren(el("p", { class: "muted" }, "Loading…"));
+  let data;
+  try { data = await call("list_staff", who.platform ? { school_id: schoolId } : {}); } catch (e) { view.replaceChildren(el("p", { class: "err" }, e.message)); return; }
+  const { school, staff } = data;
+  const note = el("p", { role: "status" });
+  const act = async (fn, okText) => { note.className = "muted"; note.textContent = "Working…"; try { await fn(); if (okText) { note.className = "ok"; note.textContent = okText; } await refreshList(); } catch (e) { note.className = "err"; note.textContent = e.message; } };
+  const refreshList = () => showSchool(schoolId).then(() => {});
+  const rows = staff.map(s => el("tr", {},
+    el("td", {}, s.display_name, " ", s.is_admin ? el("span", { class: "pill" }, "admin") : null, s.active ? null : el("span", { class: "pill off" }, "off")),
+    el("td", {}, s.email),
+    el("td", {}, el("div", { class: "row" },
+      el("button", { class: "small", onclick: () => act(async () => { const r = await call("reset_password", { staff_id: s.id }); showCreds("New password", null, [r]); }) }, "Reset password"),
+      el("button", { class: "small", onclick: () => act(() => call("set_admin", { staff_id: s.id, is_admin: !s.is_admin })) }, s.is_admin ? "Remove admin" : "Make admin"),
+      el("button", { class: "small", onclick: () => act(() => call("set_active", { staff_id: s.id, active: !s.active })) }, s.active ? "Turn off" : "Turn on")))));
+  const adults = el("textarea", { placeholder: adultsHelp });
+  const addBtn = el("button", { class: "primary", onclick: () => act(async () => {
+    const r = await call("add_adults", { school_id: schoolId, adults: parseAdults(adults.value) });
+    adults.value = ""; showCreds("Adults added", null, r.adults);
+  }) }, "Add adults");
+  const rotate = which => act(async () => {
+    if (!window.confirm(which === "pin" ? "Make a new staff PIN?" : "Make a new school code? Tablets already connected keep working.")) return;
+    const r = await call("rotate_secret", { school_id: schoolId, which });
+    showCreds(which === "pin" ? "New staff PIN" : "New school code", r, []);
+  });
+  view.replaceChildren(
+    who.platform ? el("button", { class: "small noprint", onclick: showSchools }, "← All schools") : null,
+    el("div", { class: "card" },
+      el("h2", {}, school.name),
+      el("p", {}, "School code (for child tablets): ", el("span", { class: "secret" }, school.pair_code), "   Staff PIN (to disconnect a tablet): ", el("span", { class: "secret" }, school.staff_pin)),
+      el("div", { class: "row noprint" },
+        el("button", { class: "small", onclick: () => rotate("code") }, "New school code"),
+        el("button", { class: "small", onclick: () => rotate("pin") }, "New staff PIN"))),
+    el("div", { class: "card" }, el("h2", {}, "Adults"),
+      staff.length ? el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Name children see"), el("th", {}, "Login email"), el("th", {}))), el("tbody", {}, rows)) : el("p", { class: "muted" }, "No adults yet."),
+      note),
+    el("div", { class: "card" }, el("h2", {}, "Add adults"), adults, el("div", { class: "row" }, addBtn)),
+    passwordCard());
+}
+
+/* ---------- change my password ---------- */
+function passwordCard() {
+  const pw = el("input", { type: "password", minlength: "8", autocomplete: "new-password", placeholder: "New password (8+ characters)" });
+  const msg = el("p", { role: "status" });
+  return el("div", { class: "card noprint" }, el("h2", {}, "Change my password"), pw,
+    el("div", { class: "row" }, el("button", { onclick: async () => {
+      msg.className = "muted";
+      if (pw.value.length < 8) { msg.className = "err"; msg.textContent = "Use at least 8 characters."; return; }
+      const { error } = await sb.auth.updateUser({ password: pw.value });
+      msg.className = error ? "err" : "ok"; msg.textContent = error ? "Could not change it. Try again." : "Password changed."; if (!error) pw.value = "";
+    } }, "Change password")), msg);
+}
+</script>
+</body>
+</html>
