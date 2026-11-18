@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Help at School – Staff</title>
+<meta name="theme-color" content="#0e7c86">
+<style>
+  :root { --navy:#12284c; --teal:#0e7c86; --bg:#f3f7f8; --card:#fff; --line:#cfdbe0; --red:#c0262d; --amber:#b86a00; --green:#1b7a45; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:17px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--navy); }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px; background:#fff; border-bottom:3px solid var(--teal); position:sticky; top:0; z-index:5; }
+  header img { height:44px; width:auto; }
+  header h1 { font-size:1.15rem; margin:0; flex:1; }
+  header .who { font-size:.9rem; color:#46607a; }
+  button { font:inherit; font-weight:700; border-radius:12px; border:2px solid var(--navy); background:#fff; color:var(--navy); padding:10px 16px; min-height:46px; cursor:pointer; }
+  button.primary { background:var(--teal); border-color:var(--teal); color:#fff; }
+  button.danger { background:var(--red); border-color:var(--red); color:#fff; }
+  button:focus-visible, input:focus-visible { outline:3px solid #1767bc; outline-offset:3px; }
+  main { max-width:900px; margin:0 auto; padding:16px; }
+  .login { max-width:380px; margin:40px auto; background:#fff; padding:22px; border-radius:16px; border:1px solid var(--line); display:grid; gap:12px; }
+  .login label { font-weight:700; display:grid; gap:4px; }
+  input { font:inherit; padding:10px 12px; border:2px solid var(--line); border-radius:10px; width:100%; min-height:46px; }
+  .bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; }
+  .pill { padding:4px 10px; border-radius:99px; font-size:.85rem; font-weight:800; background:#e3eef0; }
+  .conn.bad { background:#fde3e3; color:var(--red); }
+  .empty { text-align:center; color:#46607a; padding:48px 12px; background:#fff; border:2px dashed var(--line); border-radius:16px; }
+  .req { background:var(--card); border:2px solid var(--line); border-left-width:10px; border-radius:14px; padding:14px 16px; margin-bottom:12px; display:grid; gap:8px; }
+  .req.urgent { border-color:var(--red); border-left-color:var(--red); background:#fff5f5; }
+  .req.urgent.new { animation:flash 1s infinite alternate; }
+  .req.private { border-left-color:#6b3fa0; }
+  .req.mine { border-color:var(--teal); border-left-color:var(--teal); }
+  .req.ack { opacity:.85; border-left-color:var(--amber); }
+  .req.other { opacity:.65; }
+  @keyframes flash { from { background:#fff5f5; } to { background:#ffd9d9; } }
+  .req .top { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .req .child { font-weight:900; font-size:1.1rem; }
+  .req .msg { font-size:1.15rem; }
+  .req .meta { font-size:.9rem; color:#46607a; }
+  .badge { font-size:.78rem; font-weight:900; padding:3px 9px; border-radius:99px; color:#fff; background:var(--teal); }
+  .badge.urgent { background:var(--red); } .badge.private { background:#6b3fa0; } .badge.esc { background:var(--amber); }
+  .actions { display:flex; gap:10px; flex-wrap:wrap; }
+  #enable { display:block; width:100%; margin-bottom:14px; }
+  .note { font-size:.85rem; color:#46607a; margin-top:24px; }
+</style>
+</head>
+<body>
+<header>
+  <img src="logo.jpg" alt="Positive Outcomes Psychology Service">
+  <h1>Help at School – Staff</h1>
+  <span class="who" id="who"></span>
+  <button id="logout" type="button" hidden>Sign out</button>
+</header>
+<main>
+  <form class="login" id="login">
+    <h2 style="margin:0">Staff sign in</h2>
+    <label>Email <input id="email" type="email" autocomplete="username" required></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">Sign in</button>
+    <p id="login-error" role="alert" style="color:var(--red);margin:0"></p>
+  </form>
+
+  <section id="app" hidden>
+    <button class="primary" id="enable" type="button">🔔 Turn on sound alerts and keep this tablet awake</button>
+    <div class="bar">
+      <span class="pill" id="school"></span>
+      <span class="pill conn" id="conn">Connecting…</span>
+      <span class="pill" id="count"></span>
+    </div>
+    <div id="list" aria-live="polite"></div>
+    <p class="note">This page alerts only while it is open and the tablet is awake. It is not an emergency service: in an emergency, follow your school's normal procedures. Requests are kept for 30 days.</p>
+  </section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+"use strict";
+const CFG = window.HELP_LIVE;
+const sb = supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: true, autoRefreshToken: true } });
+const $ = id => document.getElementById(id);
+const ESCALATE_MS = 2 * 60 * 1000;      // unacknowledged requests for a named adult alert everyone after 2 minutes
+const norm = s => (s || "").trim().toLowerCase();
+let started = false, me = null, requests = new Map(), channel = null, audioCtx = null, wakeLock = null;
+const alerted = new Set();
+let lastBeep = 0;
+
+/* ---------- auth ---------- */
+$("login").addEventListener("submit", async event => {
+  event.preventDefault();
+  $("login-error").textContent = "";
+  const { error } = await sb.auth.signInWithPassword({ email: $("email").value.trim(), password: $("password").value });
+  if (error) $("login-error").textContent = "Sign in failed. Check your email and password.";
+});
+$("logout").onclick = () => sb.auth.signOut();
+sb.auth.onAuthStateChange((_event, session) => { session ? start(session.user) : stop(); });
+sb.auth.getSession().then(({ data }) => { if (data.session) start(data.session.user); });
+
+async function start(user) {
+  if (me && me.id === user.id) return;
+  const { data, error } = await sb.from("staff").select("id, school_id, display_name, schools(name)").eq("id", user.id).maybeSingle();
+  if (error || !data) {
+    $("login-error").textContent = "This account is not set up as school staff.";
+    await sb.auth.signOut();
+    return;
+  }
+  me = data;
+  $("login").hidden = true; $("app").hidden = false; $("logout").hidden = false;
+  $("who").textContent = me.display_name;
+  $("school").textContent = me.schools ? me.schools.name : "";
+  await load();
+  subscribe();
+  if (!started) {
+    started = true;
+    setInterval(tick, 5000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { load(); getWakeLock(); } });
+    setInterval(load, 30000);                   // safety net if a realtime message is missed
+  }
+}
+function stop() {
+  me = null; requests.clear();
+  if (channel) { sb.removeChannel(channel); channel = null; }
+  $("login").hidden = false; $("app").hidden = true; $("logout").hidden = true; $("who").textContent = "";
+}
+
+/* ---------- data ---------- */
+async function load() {
+  if (!me) return;
+  const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+  const { data, error } = await sb.from("help_requests").select("*")
+    .in("status", ["new", "acknowledged"]).gte("created_at", since).order("created_at");
+  if (error) { setConn(false); return; }
+  const fresh = new Map(data.map(r => [r.id, r]));
+  for (const r of fresh.values()) if (!requests.has(r.id) && isRelevant(r)) maybeAlert(r);
+  requests = fresh;
+  render();
+}
+function subscribe() {
+  if (channel) sb.removeChannel(channel);
+  channel = sb.channel("help-" + me.school_id)
+    .on("postgres_changes", { event: "*", schema: "public", table: "help_requests", filter: "school_id=eq." + me.school_id }, payload => {
+      const r = payload.new;
+      if (!r || !r.id) return;
+      if (r.status === "resolved") requests.delete(r.id);
+      else {
+        const isNew = !requests.has(r.id);
+        requests.set(r.id, r);
+        if (isNew && isRelevant(r)) maybeAlert(r);
+      }
+      render();
+    })
+    .subscribe(status => { setConn(status === "SUBSCRIBED"); if (status === "SUBSCRIBED") load(); });
+}
+function setConn(ok) {
+  $("conn").textContent = ok ? "Live" : "Reconnecting…";
+  $("conn").classList.toggle("bad", !ok);
+}
+
+/* ---------- routing / alerts ---------- */
+const age = r => Date.now() - new Date(r.created_at).getTime();
+const forMe = r => norm(r.requested_adult) === norm(me.display_name);
+const escalated = r => r.status === "new" && r.requested_adult && !forMe(r) && age(r) > ESCALATE_MS;
+// Alert me when: urgent, nobody was named, I was named, or the named adult has not responded in time.
+const isRelevant = r => r.kind === "urgent" || !norm(r.requested_adult) || forMe(r) || escalated(r);
+
+function maybeAlert(r) {
+  if (alerted.has(r.id)) return;
+  alerted.add(r.id);
+  beep(r.kind === "urgent" ? 3 : 1);
+  if (window.Notification && Notification.permission === "granted" && document.hidden) {
+    new Notification(r.kind === "urgent" ? "URGENT help request" : "Help request", { body: (r.child_label || "A pupil") + ": " + r.message });
+  }
+}
+function tick() {
+  if (!me) return;
+  for (const r of requests.values()) {
+    if (r.status === "new" && escalated(r)) maybeAlert(r);
+  }
+  // Keep sounding every 10 s while an urgent request is unacknowledged.
+  if ([...requests.values()].some(r => r.status === "new" && r.kind === "urgent") && Date.now() - lastBeep > 10000) beep(2);
+  render();
+}
+function beep(times) {
+  lastBeep = Date.now();
+  if (!audioCtx) return;
+  for (let i = 0; i < times; i++) {
+    const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+    osc.type = "sine"; osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, audioCtx.currentTime + i * 0.35);
+    gain.gain.exponentialRampToValueAtTime(0.4, audioCtx.currentTime + i * 0.35 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + i * 0.35 + 0.25);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(audioCtx.currentTime + i * 0.35); osc.stop(audioCtx.currentTime + i * 0.35 + 0.3);
+  }
+}
+async function getWakeLock() {
+  try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); } } catch {}
+}
+$("enable").onclick = async () => {
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume();
+  beep(1);
+  await getWakeLock();
+  if (window.Notification && Notification.permission === "default") Notification.requestPermission();
+  $("enable").textContent = "🔔 Alerts on (tap to test)";
+};
+
+/* ---------- rendering ---------- */
+function since(r) {
+  const m = Math.floor(age(r) / 60000);
+  return m < 1 ? "just now" : m + (m === 1 ? " minute ago" : " minutes ago");
+}
+function render() {
+  const list = $("list");
+  const items = [...requests.values()].sort((a, b) =>
+    (b.kind === "urgent") - (a.kind === "urgent") || (a.status === "new" ? 0 : 1) - (b.status === "new" ? 0 : 1) ||
+    new Date(a.created_at) - new Date(b.created_at));
+  $("count").textContent = items.length + (items.length === 1 ? " open request" : " open requests");
+  if (!items.length) {
+    list.replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "No open requests. New ones will appear here straight away." }));
+    return;
+  }
+  list.replaceChildren(...items.map(card));
+}
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+function card(r) {
+  const mine = forMe(r), relevant = isRelevant(r);
+  const node = el("article", "req " + r.kind + " " + (r.status === "new" ? "new" : "ack") + (mine ? " mine" : "") + (relevant ? "" : " other"));
+  const top = el("div", "top");
+  if (r.kind === "urgent") top.append(el("span", "badge urgent", "URGENT"));
+  if (r.kind === "private") top.append(el("span", "badge private", "PRIVATE"));
+  if (escalated(r)) top.append(el("span", "badge esc", "NOT YET ANSWERED"));
+  top.append(el("span", "child", r.child_label || "A pupil"));
+  node.append(top, el("div", "msg", "“" + r.message + "”"));
+  const meta = [since(r)];
+  if (r.requested_adult) meta.push("asked for " + (mine ? "you" : r.requested_adult));
+  if (r.area) meta.push(r.area);
+  if (r.status === "acknowledged") meta.push((r.handled_by_name || "Someone") + " is on the way");
+  node.append(el("div", "meta", meta.join(" · ")));
+  const actions = el("div", "actions");
+  if (r.status === "new") {
+    const go = el("button", "primary", "On my way");
+    go.onclick = () => act(r.id, "acknowledged", go);
+    actions.append(go);
+  }
+  const done = el("button", "", "Resolved");
+  done.onclick = () => act(r.id, "resolved", done);
+  actions.append(done);
+  node.append(actions);
+  return node;
+}
+async function act(id, status, button) {
+  button.disabled = true;
+  const { error } = await sb.rpc("handle_request", { p_id: id, p_status: status });
+  if (error) { button.disabled = false; alert("Could not update. Check your connection and try again."); return; }
+  const r = requests.get(id);
+  if (r) { if (status === "resolved") requests.delete(id); else r.status = status, r.handled_by_name = r.handled_by_name || me.display_name; }
+  render();
+}
+</script>
+</body>
+</html>

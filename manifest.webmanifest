@@ -1,0 +1,9 @@
+{
+  "name": "Help at School",
+  "short_name": "Help at School",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#e4f4ed",
+  "theme_color": "#0e7c86",
+  "icons": [{ "src": "logo.jpg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any" }]
+}
