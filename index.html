@@ -710,6 +710,16 @@ noscript p { padding: 14px; border: 1px solid var(--line); background: #fff; bor
 }
 @media (min-width: 651px) and (max-width: 900px) { .priority-help, .quick-request-grid { grid-template-columns: minmax(0, 1fr); gap: 7px; } .priority-help .action { min-height: 56px; } }
 @media (min-width: 651px) and (max-width: 900px) { .options .help-scene { width: 84px; } .options .tile { gap: 9px; } .options .tile-label { font-size: 1.05rem; } }
+/* ===== stronger text contrast for help messages and replies ===== */
+.request-note { color: #1f3349; font-weight: 800; font-size: 1.05rem; }
+.request-adult { color: #1f3349; }
+.tile-label small { color: #2b4057; font-weight: 700; }
+.reply-panel, [data-screen-tone="dark"] .reply-panel { color: #10203a; }
+.reply-panel .reply-sub, [data-screen-tone="dark"] .reply-panel .reply-sub { color: #1f3349; font-weight: 800; }
+.reply-panel[data-tone="info"], [data-screen-tone="dark"] .reply-panel[data-tone="info"] { background: #fff; }
+[data-screen-tone="dark"] .request-note, [data-screen-tone="dark"] .request-adult { color: #eef4fb; }
+[data-screen-tone="dark"] .tile-label small { color: #dbe7f3; }
+[data-screen-tone="dark"] .reply-pick, [data-screen-tone="dark"] .reply-pick label { color: #10203a; background: #fff; }
 </style>
 </head>
 <body>
