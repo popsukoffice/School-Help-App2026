@@ -190,6 +190,25 @@ h1, h2 { font-size: clamp(1.9rem, 4.4vw, 3.4rem); }
 .request-card { margin-top: 18px; text-align: center; background: var(--wash, #e3f5f0); border: 1px solid var(--edge, #badfd7); border-radius: 26px; padding: clamp(18px, 4vw, 38px); }
 .request-card h2 { font-size: clamp(1.45rem, 4vw, 2.2rem); }
 .message { background: #fff; border: 1px solid var(--edge, #badfd7); border-radius: 20px; margin: 18px auto; padding: clamp(16px, 4vw, 30px); font-size: clamp(1.45rem, 4.8vw, 2.5rem); font-weight: 900; line-height: 1.28; max-width: 650px; overflow-wrap: anywhere; }
+.reply-panel { margin: 16px auto; max-width: 760px; border-radius: 22px; border: 3px solid var(--edge, #badfd7); background: #fff; padding: clamp(16px, 4vw, 30px); display: flex; gap: 16px; align-items: center; text-align: left; color: var(--ink); }
+.reply-panel[hidden] { display: none; }
+.reply-icon { font-size: clamp(2.4rem, 9vw, 4rem); line-height: 1; flex: none; }
+.reply-text { font-size: clamp(1.25rem, 4.6vw, 2.1rem); font-weight: 900; line-height: 1.3; }
+.reply-sub { display: block; margin-top: 6px; font-size: clamp(1rem, 3.2vw, 1.35rem); font-weight: 700; color: var(--muted); }
+.reply-panel[data-tone="info"] { border-width: 2px; }
+.reply-panel[data-tone="info"] .reply-icon { font-size: 2rem; }
+.reply-panel[data-tone="info"] .reply-text { font-size: clamp(1.05rem, 3.6vw, 1.4rem); }
+.reply-panel[data-tone="good"] { background: #dff6e4; border-color: #1f8a3b; animation: replyPop .5s ease-out; }
+.reply-panel[data-tone="gentle"] { background: #fff3d6; border-color: #d99a1c; animation: replyPop .5s ease-out; }
+.reply-panel[data-tone="calm"] { background: #e6f1fb; border-color: #4f8fcf; animation: replyPop .5s ease-out; }
+.reply-actions { max-width: 760px; margin: 0 auto 14px; display: grid; gap: 10px; }
+.reply-actions[hidden], .reply-pick[hidden] { display: none; }
+.reply-actions .action { width: 100%; min-height: 64px; font-size: clamp(1.1rem, 3.8vw, 1.5rem); }
+.reply-pick { display: grid; gap: 10px; background: #fff; border: 2px solid var(--edge, #badfd7); border-radius: 18px; padding: 14px; }
+.reply-pick select { font-size: 1.2rem; padding: 14px; border-radius: 12px; border: 2px solid var(--line); }
+.reply-panel[data-tone="done"] { background: #e8eefc; border-color: #4a6fc4; }
+@keyframes replyPop { 0% { transform: scale(.94); } 60% { transform: scale(1.03); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .reply-panel { animation: none !important; } }
 .request-note { color: var(--muted); font-weight: 700; line-height: 1.45; }
 .audio-status { max-width: 700px; margin: 10px auto 0; text-align: center; color: var(--muted); font-weight: 700; }
 noscript p { padding: 14px; border: 1px solid var(--line); background: #fff; border-radius: 12px; margin-bottom: 16px; }
@@ -820,7 +839,16 @@ noscript p { padding: 14px; border: 1px solid var(--line); background: #fff; bor
       <div class="shortcuts"><button class="action primary" id="say-message" type="button"><span aria-hidden="true">🔊</span> <span id="say-label">Read my message</span></button></div>
       <p class="request-note" id="request-note">Show this screen to an adult you trust at school.</p>
       <div class="shortcuts" id="live-send" hidden><button class="action primary" id="send-request" type="button">Send to an adult</button></div>
-      <p class="request-note" id="send-status" role="status" aria-live="polite" hidden></p>
+      <div class="reply-panel" id="send-status" role="status" aria-live="assertive" data-tone="info" hidden><span class="reply-icon" id="reply-icon" aria-hidden="true">📨</span><span class="reply-text" id="reply-text"></span></div>
+      <div class="reply-actions" id="reply-actions" hidden>
+        <button class="action primary" id="reply-ask" type="button">Ask someone else</button>
+        <button class="action" id="reply-wait" type="button" hidden>I can wait</button>
+        <div class="reply-pick" id="reply-pick" hidden>
+          <label for="reply-pick-select"><strong>Who would you like to ask?</strong></label>
+          <select id="reply-pick-select"></select>
+          <button class="action primary" id="reply-pick-go" type="button">Ask them</button>
+        </div>
+      </div>
       <p class="request-adult" id="request-adult" dir="auto" aria-live="polite" hidden></p>
       <div id="request-adult-slot">
         <div class="help-field request-adult-field" id="adult-picker">
@@ -1981,10 +2009,48 @@ function currentAdultName() {
     : adultChoice.value.slice(6);
 }
 
-function setSendStatus(text) {
-  const status = byId("send-status");
-  status.textContent = text;
-  status.hidden = !text;
+function setSendStatus(text, tone, icon, sub) {
+  const panel = byId("send-status");
+  panel.dataset.tone = tone || "info";
+  byId("reply-icon").textContent = icon || (tone === "good" ? "✅" : tone === "gentle" ? "💛" : tone === "done" ? "👍" : "📨");
+  const out = byId("reply-text");
+  out.textContent = text;
+  if (sub) { const small = document.createElement("span"); small.className = "reply-sub"; small.textContent = sub; out.append(small); }
+  panel.hidden = !text;
+}
+
+let replyKey = "", chimeCtx = null;
+function primeChime() {
+  try { chimeCtx = chimeCtx || new (window.AudioContext || window.webkitAudioContext)(); chimeCtx.resume(); } catch {}
+}
+function replyChime() {
+  try {
+    if (!chimeCtx) return;
+    [660, 880].forEach((hz, i) => {
+      const o = chimeCtx.createOscillator(), g = chimeCtx.createGain(), t = chimeCtx.currentTime + i * 0.22;
+      o.type = "sine"; o.frequency.value = hz;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+      o.connect(g).connect(chimeCtx.destination); o.start(t); o.stop(t + 0.55);
+    });
+  } catch {}
+  try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch {}
+}
+function setReplyActions(mode, askedAdult) {
+  const box = byId("reply-actions");
+  box.hidden = !mode;
+  byId("reply-wait").hidden = mode !== "busy";
+  byId("reply-pick").hidden = true;
+  byId("reply-ask").hidden = !mode;
+  byId("reply-ask").dataset.avoid = askedAdult || "";
+}
+function showReply(key, text, tone, icon, sub, actions, askedAdult) {
+  if (key === replyKey) return;
+  setSendStatus(text, tone, icon, sub);
+  setReplyActions(actions, askedAdult);
+  replyKey = key;
+  replyChime();
+  byId("send-status").scrollIntoView({ behavior: "smooth", block: "center" });
+  if (supportAudio && !activeSpeech) { try { readAloud(text + (sub ? " " + sub : "")); } catch {} }
 }
 
 function prepareLiveSend(option, immediate, privateOnly) {
@@ -1995,6 +2061,8 @@ function prepareLiveSend(option, immediate, privateOnly) {
   button.disabled = false;
   button.textContent = "Send to an adult";
   setSendStatus("");
+  replyKey = "";
+  setReplyActions(null);
 }
 
 async function flushOutbox() {
@@ -2014,24 +2082,75 @@ async function flushOutbox() {
   return { pending: remaining.length, failed };
 }
 
+let watchingId = null;
 async function watchStatus(id) {
   clearInterval(pollTimer);
+  watchingId = id;
   const tick = async () => {
     if (screen !== "request") { clearInterval(pollTimer); return; }
     try {
-      const res = await liveFetch("/rest/v1/help_requests?id=eq." + id + "&select=status,handled_by_name");
+      const res = await liveFetch("/rest/v1/help_requests?id=eq." + id + "&select=status,response,handled_by_name,requested_adult,redirected_from");
       if (!res.ok) return;
       const [row] = await res.json();
       if (!row) return;
-      if (row.status === "acknowledged") setSendStatus((row.handled_by_name || "An adult") + " is coming to you.");
-      if (row.status === "resolved") {
-        setSendStatus("This request is finished. Tap “Clear this request” to go back.");
+      const who = row.handled_by_name || "An adult";
+      const asked = row.requested_adult;
+      if (row.status === "acknowledged") {
+        if (row.response === "soon") showReply("soon:" + who, who + " has seen this and will be with you soon.", "calm", "🕐", "You have not been forgotten. Please wait here.");
+        else if (row.response === "finishing") showReply("fin:" + who, who + " is finishing up with someone right now, and you are next.", "calm", "🕐", "Please wait here. You did the right thing by asking.");
+        else showReply("ack:" + who, who + " is coming to you.", "good", "🚶", "Please wait here. You did the right thing by asking.");
+      } else if (row.status === "resolved") {
+        showReply("done", "This request is finished.", "done", "👍", "Tap “Clear this request” to go back.");
         clearInterval(pollTimer);
+      } else if (row.response === "busy_handoff") {
+        showReply("hand:" + row.redirected_from + ">" + (asked || ""),
+          row.redirected_from + " is busy right now, so " + (asked || "another adult") + " is being asked to help you instead.", "gentle", "💛",
+          "That is okay. Please wait here.");
+      } else if (row.response === "busy") {
+        const name = row.redirected_from || asked || "The adult";
+        showReply("busy:" + name, name + " cannot step away right now.", "gentle", "💛",
+          "You can wait here, or ask someone else. You can also go to the school office.", "busy", asked || row.redirected_from);
+      } else if (row.response === "away") {
+        const name = asked || row.redirected_from || "That adult";
+        showReply("away:" + name, name + " is not in school today.", "gentle", "💛", "Who else would you like to ask?", "away", name);
+      } else if (row.response === "rerouted") {
+        showReply("re:" + (asked || ""), (asked || "Another adult") + " has been asked to help you.", "calm", "🕐", "Please wait here.");
       }
     } catch {}
   };
-  pollTimer = setInterval(tick, 4000);
+  tick();
+  pollTimer = setInterval(tick, 3000);
 }
+
+byId("reply-ask").onclick = () => {
+  const select = byId("reply-pick-select");
+  const avoid = norm_(byId("reply-ask").dataset.avoid);
+  const names = (window.schoolStaff || []).filter(n => norm_(n) !== avoid);
+  select.replaceChildren(new Option("Choose an adult…", ""), ...names.map(n => new Option(n, n)), new Option("Any adult", "*"));
+  byId("reply-pick").hidden = false;
+  select.focus();
+};
+function norm_(v) { return (v || "").trim().toLowerCase(); }
+byId("reply-wait").onclick = () => {
+  const who = byId("reply-ask").dataset.avoid || "The adult";
+  setSendStatus("OK. " + who + " will come as soon as they can.", "calm", "🕐", "Please wait here.");
+  setReplyActions(null);
+};
+byId("reply-pick-go").onclick = async () => {
+  const value = byId("reply-pick-select").value;
+  if (!value || !watchingId) { byId("reply-pick-select").focus(); return; }
+  byId("reply-pick-go").disabled = true;
+  try {
+    const res = await liveFetch("/rest/v1/rpc/reroute_my_request", { method: "POST", body: JSON.stringify({ p_id: watchingId, p_to: value === "*" ? null : value }) });
+    if (!res.ok) throw new Error("fail");
+    setSendStatus((value === "*" ? "Another adult" : value) + " has been asked to help you.", "calm", "🕐", "Please wait here.");
+    replyKey = "re:" + (value === "*" ? "" : value);
+    setReplyActions(null);
+  } catch {
+    setSendStatus("That did not send. Please try again, or show this screen to an adult.", "gentle", "💛");
+  }
+  byId("reply-pick-go").disabled = false;
+};
 
 async function attemptSend(id) {
   const result = await flushOutbox().catch(() => ({ pending: 1, failed: false }));
@@ -2048,13 +2167,14 @@ async function attemptSend(id) {
   clearInterval(sendTimer);
   currentSend.sent = true;
   byId("send-request").textContent = "Sent ✓";
-  setSendStatus("Sent. An adult has been told. Please wait here.");
+  setSendStatus("Sent. An adult has been told.", "info", "📨", "Please wait here. A reply will show on this screen.");
   watchStatus(id);
   return "sent";
 }
 
 byId("send-request").onclick = async () => {
   if (!liveSchool || !currentSend || currentSend.sent) return;
+  primeChime(); replyKey = "";
   const extra = byId("request-extra").hidden ? "" : byId("request-extra").textContent.trim();
   const message = [byId("message").textContent.trim(), extra].filter(Boolean).join(" ").slice(0, 700);
   if (!message) return;

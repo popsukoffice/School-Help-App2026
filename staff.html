@@ -40,6 +40,10 @@
   .badge { font-size:.78rem; font-weight:900; padding:3px 9px; border-radius:99px; color:#fff; background:var(--teal); }
   .badge.urgent { background:var(--red); } .badge.private { background:#6b3fa0; } .badge.esc { background:var(--amber); }
   .actions { display:flex; gap:10px; flex-wrap:wrap; }
+  .pass { display:grid; gap:8px; background:#fff8e6; border:2px solid var(--amber); border-radius:12px; padding:10px 12px; }
+  .pass label { font-weight:700; }
+  .pass select { font:inherit; padding:10px; border-radius:10px; border:2px solid var(--line); }
+  .badge.pass { background:#6b3fa0; }
   #enable { display:block; width:100%; margin-bottom:14px; }
   .note { font-size:.85rem; color:#46607a; margin-top:24px; }
 </style>
@@ -88,6 +92,7 @@ const sb = supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: tru
 const $ = id => document.getElementById(id);
 const ESCALATE_MS = 2 * 60 * 1000;      // unacknowledged requests for a named adult alert everyone after 2 minutes
 const norm = s => (s || "").trim().toLowerCase();
+let colleagues = [], passFor = null, passReason = "", passValue = "";
 let started = false, me = null, requests = new Map(), channel = null, audioCtx = null, wakeLock = null;
 const alerted = new Set();
 let lastBeep = 0;
@@ -115,6 +120,8 @@ async function start(user) {
   $("login").hidden = true; $("app").hidden = false; $("logout").hidden = false;
   $("who").textContent = me.display_name;
   $("school").textContent = me.schools ? me.schools.name : "";
+  const col = await sb.from("staff").select("display_name").eq("school_id", me.school_id).eq("active", true).order("display_name");
+  colleagues = (col.data || []).map(x => x.display_name).filter(n => norm(n) !== norm(me.display_name));
   await load();
   subscribe();
   if (!started) {
@@ -150,9 +157,12 @@ function subscribe() {
       if (!r || !r.id) return;
       if (r.status === "resolved") requests.delete(r.id);
       else {
-        const isNew = !requests.has(r.id);
+        const before = requests.get(r.id);
+        const isNew = !before;
+        const redirected = before && r.redirected_at && r.redirected_at !== before.redirected_at;
         requests.set(r.id, r);
-        if (isNew && isRelevant(r)) maybeAlert(r);
+        if (redirected) alerted.delete(r.id);
+        if ((isNew || redirected) && isRelevant(r)) maybeAlert(r);
       }
       render();
     })
@@ -166,7 +176,8 @@ function setConn(ok) {
 /* ---------- routing / alerts ---------- */
 const age = r => Date.now() - new Date(r.created_at).getTime();
 const forMe = r => norm(r.requested_adult) === norm(me.display_name);
-const escalated = r => r.status === "new" && r.requested_adult && !forMe(r) && age(r) > ESCALATE_MS;
+const waited = r => Date.now() - new Date(r.redirected_at || r.created_at).getTime();
+const escalated = r => r.status === "new" && r.requested_adult && !forMe(r) && waited(r) > ESCALATE_MS;
 // Alert me when: urgent, nobody was named, I was named, or the named adult has not responded in time.
 const isRelevant = r => r.kind === "urgent" || !norm(r.requested_adult) || forMe(r) || escalated(r);
 
@@ -175,7 +186,7 @@ function maybeAlert(r) {
   alerted.add(r.id);
   beep(r.kind === "urgent" ? 3 : 1);
   if (window.Notification && Notification.permission === "granted" && document.hidden) {
-    new Notification(r.kind === "urgent" ? "URGENT help request" : "Help request", { body: (r.child_label || "A pupil") + ": " + r.message });
+    new Notification(r.kind === "urgent" ? "URGENT help request" : r.redirected_from ? "Help request passed to you" : "Help request", { body: (r.child_label || "A pupil") + ": " + r.message });
   }
 }
 function tick() {
@@ -227,6 +238,7 @@ function since(r) {
 }
 function render() {
   const list = $("list");
+  if (passFor && document.activeElement && document.activeElement.tagName === "SELECT" && $("list").contains(document.activeElement)) return;   // do not close an open picker
   const items = [...requests.values()].sort((a, b) =>
     (b.kind === "urgent") - (a.kind === "urgent") || (a.status === "new" ? 0 : 1) - (b.status === "new" ? 0 : 1) ||
     new Date(a.created_at) - new Date(b.created_at));
@@ -250,12 +262,18 @@ function card(r) {
   if (r.kind === "urgent") top.append(el("span", "badge urgent", "URGENT"));
   if (r.kind === "private") top.append(el("span", "badge private", "PRIVATE"));
   if (escalated(r)) top.append(el("span", "badge esc", "NOT YET ANSWERED"));
+  if (r.response === "busy_handoff") top.append(el("span", "badge pass", forMe(r) ? "PASSED TO YOU" : "PASSED ON"));
+  if (r.response === "rerouted" && forMe(r)) top.append(el("span", "badge pass", "CHILD ASKED FOR YOU"));
   top.append(el("span", "child", r.child_label || "A pupil"));
   node.append(top, el("div", "msg", "“" + r.message + "”"));
   const meta = [since(r)];
-  if (r.requested_adult) meta.push("asked for " + (mine ? "you" : r.requested_adult));
+  if (r.redirected_from && r.response === "busy_handoff") meta.push((norm(r.redirected_from) === norm(me.display_name) ? "you" : r.redirected_from) + " could not come" + (r.requested_adult ? ", passed to " + (mine ? "you" : r.requested_adult) : ", open to anyone"));
+  else if (r.requested_adult) meta.push("asked for " + (mine ? "you" : r.requested_adult));
   if (r.area) meta.push(r.area);
-  if (r.status === "acknowledged") meta.push((r.handled_by_name || "Someone") + " is on the way");
+  if (r.status === "acknowledged") meta.push((r.handled_by_name || "Someone") + (r.response === "soon" ? " will be there soon" : r.response === "finishing" ? " is finishing up first" : " is on the way"));
+  if (r.status === "new" && r.response === "busy") meta.push("child told " + r.redirected_from + " cannot step away and can ask someone else");
+  if (r.status === "new" && r.response === "away") meta.push("child told the adult is not in school and can ask someone else");
+  if (r.response === "rerouted") meta.push("child asked someone else");
   node.append(el("div", "meta", meta.join(" · ")));
   const actions = el("div", "actions");
   if (r.status === "new") {
@@ -263,18 +281,75 @@ function card(r) {
     go.onclick = () => act(r.id, "acknowledged", go);
     actions.append(go);
   }
+  if (r.status === "new" || r.response === "soon" || r.response === "finishing") {
+    if (r.status !== "new") {
+      const go2 = el("button", "primary", "On my way");
+      go2.onclick = () => act(r.id, "acknowledged", go2);
+      actions.prepend(go2);
+    }
+    if (r.status === "new") {
+      const cant = el("button", "", "Not right now…");
+      cant.onclick = () => { passFor = passFor === r.id ? null : r.id; passReason = ""; passValue = ""; render(); };
+      actions.append(cant);
+    }
+  }
   const done = el("button", "", "Resolved");
   done.onclick = () => act(r.id, "resolved", done);
   actions.append(done);
   node.append(actions);
+  if (passFor === r.id && r.status === "new") node.append(passPanel(r));
   return node;
+}
+const REASONS = [
+  ["soon", "I will be with them soon", "The child sees: “I have seen this and will be with you soon.”"],
+  ["finishing", "I am finishing with someone, they are next", "The child sees: “finishing up with someone right now, and you are next.”"],
+  ["busy_handoff", "I am busy, please ask someone else to help", "Choose who below. The child is told kindly, and that adult is alerted."],
+  ["busy", "I cannot step away right now", "The child can wait, ask someone else, or go to the school office."],
+  ["away", "The adult asked for is not in school today", "The child is asked who else they would like to ask."]
+];
+function passPanel(r) {
+  const box = el("div", "pass");
+  box.append(el("label", "", "Tell the child kindly why they are waiting:"));
+  REASONS.forEach(([value, label, hint]) => {
+    const row = el("label", "");
+    const radio = document.createElement("input");
+    radio.type = "radio"; radio.name = "reason-" + r.id; radio.value = value; radio.checked = passReason === value;
+    radio.onchange = () => { passReason = value; render(); };
+    row.append(radio, document.createTextNode(" " + label));
+    box.append(row);
+    if (passReason === value) box.append(el("div", "meta", hint));
+  });
+  let select = null;
+  if (passReason === "busy_handoff") {
+    select = document.createElement("select");
+    select.setAttribute("aria-label", "Choose an adult");
+    select.append(new Option("Choose an adult…", ""));
+    colleagues.forEach(n => select.append(new Option(n, n)));
+    select.append(new Option("Any available adult", "*"));
+    select.value = passValue;
+    select.onchange = () => { passValue = select.value; };
+    box.append(select);
+  }
+  const send = el("button", "primary", "Send to the child");
+  send.onclick = async () => {
+    if (!passReason) return;
+    if (passReason === "busy_handoff" && !passValue) { select.focus(); return; }
+    send.disabled = true;
+    const to = passReason === "busy_handoff" && passValue !== "*" ? passValue : null;
+    const { error } = await sb.rpc("respond_request", { p_id: r.id, p_response: passReason, p_to: to });
+    if (error) { send.disabled = false; alert("Could not send. Check your connection and try again."); return; }
+    passFor = null; passReason = ""; passValue = "";
+    await load();
+  };
+  box.append(send);
+  return box;
 }
 async function act(id, status, button) {
   button.disabled = true;
   const { error } = await sb.rpc("handle_request", { p_id: id, p_status: status });
   if (error) { button.disabled = false; alert("Could not update. Check your connection and try again."); return; }
   const r = requests.get(id);
-  if (r) { if (status === "resolved") requests.delete(id); else r.status = status, r.handled_by_name = r.handled_by_name || me.display_name; }
+  if (r) { if (status === "resolved") requests.delete(id); else { r.status = status; r.response = "now"; r.handled_by_name = me.display_name; } }
   render();
 }
 </script>
